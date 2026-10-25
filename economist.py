@@ -1,38 +1,49 @@
 import re
-import pandas as pd
-from pulp import LpProblem, LpMinimize, LpVariable, lpSum, PULP_CBC_CMD
-import numpy as np
+import pulp
+import Tree_building_logic as TBL
+import Tree_logic as TL
+import Data_normalization as dn
 
-df_par = pd.read_csv("C:/Users/Ohadl/OneDrive/Desktop/App/python/API_features_set.csv")
-df_lang = pd.read_csv("C:/Users/Ohadl/OneDrive/Desktop/App/phoible/cldf-datasets-phoible-f36deac/cldf/languages.csv")
-df_val = pd.read_csv("C:/Users/Ohadl/OneDrive/Desktop/App/phoible/cldf-datasets-phoible-f36deac/cldf/values.csv")
+class IdenticalSegmentsError(Exception):
+    """Raised when two segments have identical feature matrices."""
+    pass
 
-cols_to_keep = [
-    "voiced", "vowel", "consonant", "Affricate",
-    "lateral", "Plosive", "Fricative", "Nasal", "Approximant", "Postalveolar", "Velar", "Bilabial",
-    "Alveolar","Ejective", "primary stress", "Dental", "Aspirated", "Labialized", "Palatalized", "Velarized",
-    "Pharyngealized", "Caron", "Retroflex", "Palatal", "Long", "Double_Long", "Extra-long", "long", "Retracted",
-    "Tie_Bar","Fortis (Strong)", "Nasalized", "Raised", "Lowered", "Glottal", "Extra-short", "Uvular",
-    "Pharyngeal", "Labio-dental", "close", "close-mid", "open-mid", "open", "front", "central", "back",
-    "round", "Near-close", "Near-open", "Mid", "Brackets/Noise", "Geminate", "Velarized_Overlay",
-]
-
-ipa_list = df_par["NAME"].astype(str).tolist()
-
-SEGMENT_ID_COL = 'NAME'
+# Creates a list of all relevant features (+categories, e.g 'Laryngeal')
+def get_all_features(master_root:TBL.Root):
+    ftrlst = set() 
+    strclst = set()
+    # Recursively climbs down the tree and adds every feature name to the set. 
+    def helper(node):
+        if not node or node is None:
+            return 
+        if not isinstance(node, TBL.Root):
+            ftrlst.add(node.feature)
+        if node.children:
+            for i in node.children:
+                helper(i)
+            if not isinstance(node, TBL.Root):
+                strclst.add(node.feature)
         
-def input_inv(u_seg : str):
-    ## cleans input into a list of IPA chars only, no duplicates
-    l_seg = [seg for seg in re.split(r"[,\s]+", u_seg) if seg in ipa_list]
-    l_seg = list(set(l_seg))
-    return l_seg, u_seg
+        return ftrlst
+    if not isinstance(master_root, TBL.Root):
+        cont = input("adding a non-root node will result in a partial list of the features of the given subtree only. \n" \
+        "in turn, such a list will crash an unaltered application when attempting to run. continue? y/n :")
+        if cont == 'n':
+            return 
+    helper(master_root)
+    # Add the root features to the set. 
+    for key in master_root.data.keys():
+        ftrlst.add(key)
 
-def append_input_dict(input_dict, curr_input, input_counter, name_from_ui):
-    """Appends current inventory to dict with a name or counter."""
-    key = name_from_ui if name_from_ui else str(input_counter)
-    # We assume curr_input is the list of segments
-    input_dict[key] = curr_input 
-    return input_dict
+    return (list(ftrlst), list(strclst))
+
+# Cleans input into a set of unique IPA chars.
+def input_inv(u_seg : str):
+    l_seg = [seg for seg in re.split(r"[,\s]+", u_seg) if seg in dn.ipa_list]
+    l_seg = list(set(l_seg))
+    conmap = dn.load_conversion_map_manual("./data/conversion_dict.txt")
+    l_seg = dn.normalize_and_deduplicate(l_seg, conmap)
+    return l_seg, u_seg
 
 def pair_up(l_seg):
 ##  creates a list of all possible pairs from the input_inv() func
@@ -42,125 +53,90 @@ def pair_up(l_seg):
             pairs.append([l_seg[i], l_seg[p]])
     return pairs
 
-def create_dicts(l_seg):
-## creates list of dictionaries with negation or confirmation 
-## of features for each letter in input_inv()'s input
+def get_feature_val(tree, feature_name):
+    # Handle the Root-level dictionary features
+    if feature_name in ["Consonantal", "Sonorant", "syllabic"]:
+        return tree.root.data.get(feature_name)
+    # Check for the Terminal Node's value
+    node = TL.find_node(tree, feature_name)
+    if node and hasattr(node, 'value'):
+        if node.value == 1:
+            return 1
+    return 0
+
+def feature_economist(df = dn.df, l_seg = None):
+    ALLFEATURES = get_all_features(TBL.TREE1.root)
+    all_feature_names = ALLFEATURES[0]
+    # Define the problem as a minimization problem. 
+    prob = pulp.LpProblem(name = "minimize-set", sense = pulp.LpMinimize)
+    master = TBL.TREE1
+    tree_inventory = [TBL.build_tree_by_symbol(sym, df) for sym in l_seg]
+    pairs = pair_up(tree_inventory)
+    costs = TL.get_cf(tree_inventory, master, all_feature_names)
+    # Structural nodes (non-leaves) are not considered for the minimal set as they do not directly represent discrete features. 
+    structural_nodes = ALLFEATURES[1]
+    selectable_features = [f for f in all_feature_names if f not in structural_nodes]
+    X = pulp.LpVariable.dicts("Feat", selectable_features, cat=pulp.LpBinary)
+    prob += pulp.lpSum([costs[f] * X[f] for f in selectable_features]), "Total_Cost"
+    
+    consonant_terminals = [
+        "approximant", "continuant", "nasal",
+        "spreadGlottis", "constrictedGlottis", "fortis", 
+        "loweredLarynxImplosive", "raisedLarynxEjective", "voiced",
+        "epilaryngealSource", "retractedTongueRoot", "advancedTongueRoot",
+        "click", "tap", "trill", "delayedRelease",
+        "labiodental", "anterior", "distributed", "lateral", "strident"
+    ]
+    for feat in consonant_terminals:
+        if feat in X and "Consonantal" in X:
+            prob += X[feat] <= X["Consonantal"], f"RootTax_{feat}"
+
+    vowel_terminals = [
+        "round", "front", "high", "low", "back", "tense", 
+        "long", "short"
+    ]
+    for feat in vowel_terminals:
+        if feat in X and "Sonorant" in X:
+            prob += X[feat] <= X["Sonorant"], f"RootTax_{feat}"
+
+    for tree_a, tree_b in pairs:
+        distinguishing_features = []
+        for feature in selectable_features:
+            if feature == "MASTER":
+                continue
+            val_a = get_feature_val(tree_a, feature)
+            val_b = get_feature_val(tree_b, feature)
+            if val_a != val_b:
+                distinguishing_features.append(feature)
+        if distinguishing_features:
+            rule_name = f"Distinguish_{tree_a.root.name}_from_{tree_b.root.name}"
+            prob += pulp.lpSum([X[f] for f in distinguishing_features]) >= 1, rule_name      
+        else: 
+            print(tree_a.root.name, tree_b.root.name)
+            raise IdenticalSegmentsError
+    
+    prob.solve()
+    status = pulp.LpStatus[prob.status]
+    print(f"Solver Status: {status}")
+    if status != 'Optimal':
+        print("Warning: Could not find an optimal solution!")
+        return None
+    minimal_set = []
+    for feature in selectable_features:
+        if feature == "MASTER":
+            continue
+        if X[feature].varValue and X[feature].varValue > 0.5:
+            minimal_set.append(feature)
+
+    return (minimal_set, len(minimal_set))
+
+
+def create_dicts(l_seg, all_feature_names = get_all_features(TBL.TREE1.root)[0]):
+## creates list of dictionaries with negation or confirmation of features for each letter in input_inv()'s input
     dicts_feats = []
     for seg in l_seg:
-        current_df = df_par[df_par[SEGMENT_ID_COL] == seg]
-        selected_cols = [SEGMENT_ID_COL] + [col for col in cols_to_keep if col in current_df.columns]
+        current_df = dn.df[dn.df[dn.SEGMENT_ID_COL] == seg]
+        selected_cols = [dn.SEGMENT_ID_COL] + [col for col in all_feature_names if col in current_df.columns]
         current_df = current_df[selected_cols]
         dicts_feats.extend(current_df.to_dict('records'))
     return dicts_feats
-
-def feature_economist(l_seg = None):
-## pulls dicts for all segments in input
-    if l_seg == None:
-        return 0
-    dicts_feats = create_dicts(l_seg)
-    list_of_pairs = pair_up(l_seg)
-    lookup = {d[SEGMENT_ID_COL]: d for d in dicts_feats}
-    features = [f for f in dicts_feats[0].keys() if f in cols_to_keep]
-    if not list_of_pairs:
-        return 0
-    # Precompute which features can distinguish each pair
-    pair_distinguishing_features = {}
-    for (a, b) in list_of_pairs:
-        distinguishing = [f for f in features if lookup[a][f] != lookup[b][f]]
-        if not distinguishing:
-            # This pair cannot be distinguished by any feature
-            return 0      
-        pair_distinguishing_features[(a, b)] = distinguishing
-              
-    # Create binary decision variables (1 = include feature, 0 = exclude)
-    feature_vars = {f: LpVariable(f"x_{i}", cat='Binary') 
-                   for i, f in enumerate(features)}
-    # Create optimization problem
-    prob = LpProblem("MinimumFeatureSet", LpMinimize)
-    # Objective: minimize total number of selected features
-    prob += lpSum(feature_vars.values()), "TotalFeatures"
-    # Constraints: each pair must be distinguished by at least one selected feature
-    for pair_id, (a, b) in enumerate(list_of_pairs):
-        distinguishing = pair_distinguishing_features[(a, b)]
-        prob += (lpSum(feature_vars[f] for f in distinguishing) >= 1, f"Pair_{pair_id}_{a}_{b}")
-    # Solve the problem (msg=0 suppresses solver output)
-    status = prob.solve(PULP_CBC_CMD(msg=0))
-    # Check if optimal solution was found
-    if status != 1:  # 1 = LpStatusOptimal
-        return None
-
-    # Extract selected features
-    selected_features = [f for f in features if feature_vars[f].varValue == 1]
-    return len(selected_features)
-
-
-def feature_economist_optimized(l_seg=None):
-    """
-    Ultra-optimized version: NumPy Vectorization + Bitmask Constraint Pruning.
-    """
-    if not l_seg or len(l_seg) < 2:
-        return {"count": 0, "features": []}
-
-    # 1. Faster Data Extraction
-    df_sub = df_par[df_par[SEGMENT_ID_COL].isin(l_seg)].set_index(SEGMENT_ID_COL)
-    df_sub = df_sub[[c for c in cols_to_keep if c in df_sub.columns]]
-    
-    matrix = df_sub.to_numpy()
-    features = df_sub.columns.tolist()
-    segment_names = df_sub.index.tolist()
-    num_segs = len(segment_names)
-
-    # 2. NumPy Pairwise Comparison
-    # Create diff_matrix: (N_segs, N_segs, N_features)
-    diff_matrix = matrix[:, None, :] != matrix[None, :, :]
-    rows, cols = np.triu_indices(num_segs, k=1)
-    
-    # 3. Bit-Packed Pruning (The "Speed Secret")
-    # Convert each pair's differences into a single large integer (bitmask)
-    pair_bitsets = []
-    for r, c in zip(rows, cols):
-        # np.where returns the indices where features differ
-        diff_indices = np.where(diff_matrix[r, c])[0]
-        
-        if len(diff_indices) == 0:
-            return {"error": f"Indistinguishable: ({segment_names[r]}, {segment_names[c]})"}
-        
-        # Create bitmask: e.g., features 0 and 2 different -> 101 (binary) -> 5 (int)
-        mask = 0
-        for idx in diff_indices:
-            mask |= (1 << idx)
-        pair_bitsets.append(mask)
-
-    # Remove duplicates and sort by number of set bits (simplest constraints first)
-    unique_masks = sorted(list(set(pair_bitsets)), key=lambda x: bin(x).count('1'))
-    
-    # Subset Pruning: If A is a subset of B, B is redundant.
-    minimal_masks = []
-    for b in unique_masks:
-        # Check if any mask already in 'minimal' is a subset of the current mask 'b'
-        if not any((b & m) == m for m in minimal_masks):
-            minimal_masks.append(b)
-
-    # 4. Final Small-Scale Optimization
-    prob = LpProblem("MinFeatures", LpMinimize)
-    feature_vars = {f: LpVariable(f"feat_{i}", cat='Binary') for i, f in enumerate(features)}
-    
-    prob += lpSum(feature_vars.values())
-
-    # Add only the pruned, essential constraints
-    for mask in minimal_masks:
-        # Reconstruct which features the mask represents
-        dist_feats = [features[i] for i in range(len(features)) if (mask & (1 << i))]
-        prob += lpSum([feature_vars[f] for f in dist_feats]) >= 1
-        
-    # Solve silently
-    status = prob.solve(PULP_CBC_CMD(msg=0))
-    
-    if status == 1:
-        selected = [f for f in features if feature_vars[f].varValue == 1]
-        return len(selected)
-    
-    return {"error": "Solver failed to find a solution."}
-
-
-print(feature_economist(['a', 'b', 'c', 'd', 'f', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'w', 'r', 's']))
