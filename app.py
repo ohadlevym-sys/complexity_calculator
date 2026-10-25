@@ -2,7 +2,21 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import economist as engine
-import Main as main
+import scores as scores
+from languages_dict import phoible_languages
+import Data_normalization as dn
+import Tree_building_logic as TBL
+
+def has_tones(segment_list):
+    """
+    בודק אם רשימת הסגמנטים מכילה תווי טון אופייניים של IPA.
+    """
+    tone_chars = ['˥', '˦', '˧', '˨', '˩', '↓']
+    for segment in segment_list:
+        if any(tone_char in str(segment) for tone_char in tone_chars):
+            return True
+    return False
+
 
 # 1. Page Configuration
 st.set_page_config(initial_sidebar_state="expanded", layout="wide")
@@ -46,7 +60,7 @@ with st.sidebar:
                         st.rerun()
                 else:
                     # Normal Display
-                    with st.expander(f"📦 {name}"):
+                    with st.expander(f"{name}"):
                         st.write(", ".join(st.session_state.all_inventories[name]))
 
             with cols[1]: # Delete Button
@@ -62,42 +76,90 @@ with st.sidebar:
             st.rerun()
 
 # --- MAIN UI: Inventory Setup ---
+# --- MAIN UI: Inventory Setup ---
 st.title("IPA Feature Complexity Calculator")
-st.subheader("Inventory Setup")
+st.markdown("---")
 
-raw_input = st.text_area("Enter IPA segments:", help="Separate with spaces or commas")
-inv_name = st.text_input("Name for this inventory (optional):")
+# שימוש בשתי עמודות כדי לחסוך מקום ולהציג את שתי אפשרויות ההזנה זו לצד זו
+col_manual, col_db = st.columns(2)
 
-can_add = False
-clean_list = []
+with col_manual:
+    st.subheader("📝 Manual Input")
+    raw_input = st.text_area("Enter IPA segments:", help="Separate with spaces or commas", height=100)
+    inv_name = st.text_input("Name for this inventory (optional):")
 
-if raw_input:
-    input_list = [s.strip() for s in raw_input.replace(',', ' ').split()]
-    clean_list, _ = engine.input_inv(raw_input)
-    missing = [s for s in input_list if s not in clean_list]
+    can_add = False
+    clean_list = []
 
-    if missing:
-        st.warning(f"Unrecognized symbols: {', '.join(missing)}")
-        if st.checkbox("Proceed without unrecognized segments?", key="confirm_err"):
+    if raw_input:
+        input_list = [s.strip() for s in raw_input.replace(',', ' ').split()]
+        clean_list, _ = engine.input_inv(raw_input)
+        missing = [s for s in input_list if s not in clean_list]
+
+        if missing:
+            st.warning(f"Unrecognized symbols: {', '.join(missing)}")
+            if st.checkbox("Proceed without unrecognized segments?", key="confirm_err"):
+                can_add = True
+        elif len(clean_list) < 2:
+            st.error("Please enter at least two recognized IPA symbols.")
+        else:
             can_add = True
-    elif len(clean_list) < 2:
-        st.error("Please enter at least two recognized IPA symbols.")
-    else:
-        can_add = True
 
-if st.button("Add to Database"):
-    if not raw_input:
-        st.error("Cannot add empty inventory.")
-    elif can_add:
-        name = inv_name if inv_name else str(len(st.session_state.all_inventories) + 1)
-        st.session_state.all_inventories[name] = clean_list
-        st.success(f"Inventory '{name}' saved!")
-        st.rerun()
+    if st.button("Add Manual Inventory",type="primary", use_container_width=True):
+        if not raw_input:
+            st.error("Cannot add empty inventory.")
+        elif can_add:
+            name = inv_name if inv_name else f"Custom_{len(st.session_state.all_inventories) + 1}"
+            st.session_state.all_inventories[name] = clean_list
+            st.success(f"Inventory '{name}' saved!")
+            st.rerun()
+
+with col_db:
+    st.subheader("🌍 Import from PHOIBLE")
+    display_to_original = {}
+    for lang_name, segments in phoible_languages.items():
+        if has_tones(segments):
+            # מוסיף סמל או טקסט (למשל סמל של תו מוזיקלי או [T])
+            display_name = f"{lang_name}                    (T)" 
+        else:
+            display_name = lang_name
+            
+        display_to_original[display_name] = lang_name
+
+    selected_display_langs = st.multiselect(
+        "Search and select languages:", 
+        options=list(display_to_original.keys()),
+        help="Start typing a language name to see suggestions. Languages with 🎵 (T) have tonal segments."
+    )
+    
+    # ריווח קטן כדי שהכפתור יהיה בערך באותו גובה כמו בצד של ההזנה הידנית
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    if st.button("Add Selected Languages", type="primary", use_container_width=True):
+        if not selected_display_langs:
+            st.warning("Please select at least one language.")
+        else:
+            added_count = 0
+            with st.spinner("Importing and cleaning segments..."):
+                for lang in selected_display_langs:
+                    # המרה למחרוזת אחת עם רווחים כדי להריץ במנוע
+                    raw_segments = " ".join(phoible_languages[lang])
+                    clean_list, _ = engine.input_inv(raw_segments)
+                    
+                    if len(clean_list) >= 2:
+                        st.session_state.all_inventories[lang] = clean_list
+                        added_count += 1
+            
+            if added_count > 0:
+                st.success(f"Successfully added {added_count} languages to your database!")
+                st.rerun()
+            else:
+                st.error("None of the selected languages had enough recognized segments.")
 
 # --- ANALYSIS SECTION ---
 st.markdown("---")
 st.subheader("Analysis & Actions")
-tab1, tab2, tab3 = st.tabs(["Calculate Complexity & Economy", "Feature Tables", "Graphing"])
+tab1, tab2, tab3, tab4 = st.tabs(["Calculate Complexity & Economy", "Feature Tables", "Graphing", "Feature Geometry Trees"])
 
 with tab1:
     st.write("Run complexity and economy models on your saved inventories.")
@@ -150,21 +212,46 @@ with tab1:
         else:
             with st.spinner("Calculating..."):
                 all_dfs = []
-                for metric in selected_metrics:
-                    results, _ = main.get_multi_score(
-                        inputdict=st.session_state.all_inventories, 
-                        selected_models=selected_model_codes,
-                        calc_type=metric
-                    )
-                    df = pd.DataFrame(results).T
-                    if len(selected_metrics) > 1:
-                        label = "Complexity" if metric == 2 else "Economy"
-                        df.columns = [f"{col} ({label})" for col in df.columns]
-                    all_dfs.append(df)
+                error_occurred = False 
                 
-                final_df = pd.concat(all_dfs, axis=1)
-                st.write("### Comparison Results")
-                st.dataframe(final_df)
+                for metric in selected_metrics:
+                    try:
+                        results, _ = scores.get_multi_score(
+                            inputdict=st.session_state.all_inventories, 
+                            selected_models=selected_model_codes,
+                            calc_type=metric
+                        )
+                        
+                        df = pd.DataFrame(results).T
+                        if len(selected_metrics) > 1:
+                            label = "Complexity" if metric == 2 else "Economy"
+                            df.columns = [f"{col} ({label})" for col in df.columns]
+                        all_dfs.append(df)
+                        
+                    except engine.IdenticalSegmentsError:
+                        error_occurred = True
+                        st.error("Calculation aborted: We found segments that cannot be distinguished.")
+                        
+                        # -- מציאת ההגאים הבעייתיים --
+                        # עוברים על כל האינבנטוריז השמורים כדי למצוא למי מהם יש כפילות
+                        for inv_name_check, segments_list in st.session_state.all_inventories.items():
+                            raw_data = engine.create_dicts(segments_list)
+                            err_df = pd.DataFrame(raw_data)
+                            
+                            # מגדירים את הסגמנט כאינדקס כדי שהפונקציה תדפיס את השם שלו
+                            if dn.SEGMENT_ID_COL in err_df.columns:
+                                err_df = err_df.set_index(dn.SEGMENT_ID_COL)
+                            
+                            # שולחים לפונקציית העזר שלנו - היא תדפיס שגיאה רק אם יש כפילות!
+                            #show_identical_segments_error(err_df, inv_name_check)
+                        
+                        break # עוצר את המשך החישובים!
+                
+                # מוודא שאין שגיאה *וגם* שיש טבלאות לאחד (מונע את ה-ValueError)
+                if not error_occurred and len(all_dfs) > 0:
+                    final_df = pd.concat(all_dfs, axis=1)
+                    st.write("### Comparison Results")
+                    st.dataframe(final_df)
 
 with tab2:
     st.subheader("Feature Table Explorer")
@@ -177,35 +264,57 @@ with tab2:
         current_segments = st.session_state.all_inventories[selected_inv_name]
 
         if current_segments:
-            # 2. קריאה לפונקציה שלך
+            # כפתור ה-Toggle לכלכלה
+            show_minimal = st.toggle("Show Minimal Contrastive Matrix only", value=False)
+            
+            # 2. תמיד נייצר קודם את המטריצה המלאה
             raw_data = engine.create_dicts(current_segments) 
             
             if raw_data:
-                # 3. המרה ל-DataFrame - פנדס יודע לקרוא רשימת מילונים באופן טבעי
+                # 3. המרה ל-DataFrame 
                 full_feature_df = pd.DataFrame(raw_data)
                 
-                # הגדרת עמודת הסגמנט כאינדקס (כדי שהיא תהיה השורה הראשונה בצד)
-                # וודא ש-SEGMENT_ID_COL הוא השם שמופיע בטבלה (למשל 'segment' או 'IPA')
-                if engine.SEGMENT_ID_COL in full_feature_df.columns:
-                    full_feature_df = full_feature_df.set_index(engine.SEGMENT_ID_COL)
+                # הגדרת עמודת הסגמנט כאינדקס (השורות של הטבלה)
+                # וודא שהשם פה תואם למשתנה שלך (engine.SEGMENT_ID_COL או dn.SEGMENT_ID_COL)
+                if dn.SEGMENT_ID_COL in full_feature_df.columns:
+                    full_feature_df = full_feature_df.set_index(dn.SEGMENT_ID_COL)
                 
-                # 4. בחירת סגמנטים ופיצ'רים
+                # --- החיתוך המינימלי מתבצע כאן ---
+                if show_minimal:
+                    try:
+                        # קריאה לפונקציה האמיתית שלך! (משער שהיא מחזירה רשימה ואורך)
+                        minimal_features_list, minimal_inventory_size = engine.feature_economist(l_seg = current_segments)
+                        
+                        # אנחנו שומרים מתוך הטבלה רק את העמודות שנמצאות ברשימה שהפונקציה החזירה
+                        cols_to_keep = [col for col in full_feature_df.columns if col in minimal_features_list]
+                        full_feature_df = full_feature_df[cols_to_keep]
+                        
+                        st.info(f"Showing {(minimal_inventory_size)} feature minimal contrastive set.")
+                        
+                    except engine.IdenticalSegmentsError: # או כל שגיאה אחרת שהפונקציה שלך זורקת
+                        st.error("Cannot compute minimal matrix: 2 or more segments cannot be distinguished.")
+                
+                # 4. הכנת אפשרויות הבחירה (Multiselect) - עכשיו זה מעודכן אוטומטית למלא או למינימלי
                 all_segments = full_feature_df.index.tolist()
                 all_features = full_feature_df.columns.tolist()
 
                 chosen_segments = st.multiselect("Select Segments:", all_segments, default=all_segments)
-                chosen_features = st.multiselect("Select Features:", all_features, default=all_features[:15])
+                chosen_features = st.multiselect("Select Features:", all_features, default=all_features)
 
                 if chosen_segments and chosen_features:
                     # 5. הצגת הטבלה המסוננת
                     filtered_df = full_feature_df.loc[chosen_segments, chosen_features]
-                    st.write(f"### Feature Matrix: {selected_inv_name}")
+                    
+                    matrix_title = "Minimal Feature Matrix" if show_minimal else "Full Feature Matrix"
+                    st.write(f"### {matrix_title}: {selected_inv_name}")
+                    
                     st.dataframe(filtered_df, width='stretch')
                 else:
                     st.warning("Please select at least one segment and one feature.")
             else:
                 st.warning("No data found for these segments.")
 
+        
 with tab3:
     st.subheader("Visual Analysis: Complexity & Economy")
     
@@ -251,7 +360,7 @@ with tab3:
         if selected_plot_codes:
             with st.spinner("Refining visualization..."):
                 # 3. Calculation
-                results, _ = main.get_multi_score(
+                results, _ = scores.get_multi_score(
                     inputdict=st.session_state.all_inventories,
                     selected_models=selected_plot_codes,
                     calc_type=calc_type
@@ -285,3 +394,45 @@ with tab3:
                 
         else:
             st.warning("Please select at least one model to view the chart.")
+
+
+with tab4: 
+    st.subheader("Feature Geometry Tree Generator")
+    
+    if not st.session_state.all_inventories:
+        st.info("Please add at least one inventory to explore feature trees.")
+    else:
+        # 1. בחירת האינבנטורי מתוך מה ששמור
+        selected_inv_for_tree = st.selectbox(
+            "Select Inventory:", 
+            list(st.session_state.all_inventories.keys()), 
+            key="tab3_inv_sel"
+        )
+        current_segments = st.session_state.all_inventories[selected_inv_for_tree]
+
+        if current_segments:
+            selected_segment = st.selectbox(
+                "Select a Segment:", 
+                current_segments,
+                key="tab3_seg_sel"
+            )
+                
+        st.markdown("---") # הוספתי קו הפרדה קטן ליופי בין הבחירה לעץ
+                
+            # 3. הצגת העץ (שורה שלישית, מתחת לבחירה)
+        if selected_segment:
+            with st.spinner(f"Generating Feature Geometry for /{selected_segment}/..."):
+                try:
+                    # 3. כאן אתה קורא לפונקציה מהמנוע שלך שמייצרת עץ לסגמנט בודד
+                    # שנה את הקריאה הזו לפונקציה המדויקת שיש לך במנוע!
+                    my_tree = TBL.build_tree_by_symbol(selected_segment, dn.df)
+                    
+                    # 4. המרת העץ לאובייקט הציור של Graphviz
+                    dot_graph = TBL.generate_tree_graph(my_tree.root)
+                    
+                    # 5. ציור ישיר על המסך של Streamlit!
+                    st.graphviz_chart(dot_graph, use_container_width=True)
+                    
+                except Exception as e:
+                    st.error(f"Could not generate tree for {selected_segment}. Error: {e}")
+    
