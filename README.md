@@ -1,21 +1,32 @@
-***** **COMPLEXITY CALCULATOR** *****
+# IPA Feature Complexity & Economy Calculator
 
-A python-based web app that calculates phonological complexity\economy scores for phoneme inventories, relying on the models presented by Mackie & Mielke (2011). In addition, the app allows for creation and extraction of phonological feature tables and complexity\economy graphs for said inventories. 
+A computational phonology web application built to analyze and calculate segment-feature economy and phonological complexity scores across linguistic inventories. The tool bridges theoretical phonology and linear programming to extract minimal contrastive feature matrices and visualize structural relationships.
 
-The program allows for: 
-* **Multi-Inventory Support:** Simultaneous input and analysis of several separate phoneme inventories.
-* **Dynamic Scoring:** Calculation of complexity/economy scores based on three distinct models (simultaneous use allowed).
-* **Feature Table Generation:** Creation and exportation of phonological feature tables for given (or parts of given) phoneme inventories.
-* **Data Visualization:** Creation and exportation of bar and line graphs representing complexity/economy scores.
+## Core Features
+* **Minimal Feature Set Optimization:** Uses Binary Linear Programming (via PuLP) to compute the most economical feature matrix required to distinguish all segments in a given inventory.
+* **Feature Geometry Trees:** Dynamically builds and visualizes hierarchical feature trees for individual IPA segments using Graphviz.
+* **PHOIBLE Database Integration:** Search, import, and normalize phonological inventories directly from PHOIBLE.
+* **Scoring Models:** Evaluates inventories using multiple theoretical models, including Relative, Exploitation, and Frugality scores, visualized via Plotly.
+* **Manual Inventory Testing:** Input custom IPA segment lists, normalized dynamically to resolve diacritic and unicode inconsistencies.
 
-Getting started: 
-[Currently irrelevant. PLACEHOLDER for deployment phase] 
+## Tech Stack
+* **Frontend:** Streamlit, Plotly
+* **Data Processing & Logic:** Python, Pandas
+* **Mathematical Optimization:** PuLP
+* **Graph Visualization:** Graphviz
 
-Usage: 
-[PLACEHOLDER]
+## Installation
 
-Technologies used: 
-The project uses python code relying on the following libraries: 
-* **Core Logic:** Python (pandas, PuLP, NumPy, re, math)
-* **Data Visualization:** Plotly Express
-* **User Interface:** Streamlit
+1. Clone this repository:
+    git clone https://github.com/ohadlevym-sys/complexity_calculator.git
+    cd complexity_calculator
+
+2. Install the required dependencies:
+    pip install -r requirements.txt
+
+(Note: Graphviz must also be installed on your system path for tree generation to work).
+
+## Usage
+
+Launch the interactive web application locally:
+    streamlit run app.py
